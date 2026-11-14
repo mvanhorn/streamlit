@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeAlias, cast
 
@@ -154,16 +156,19 @@ class MetricMixin:
 
             - If the delta is ``None`` or an empty string, no arrow is shown.
             - If the delta is zero, no arrow is shown and the delta is gray.
-            - If the delta is a negative number or starts with a minus sign,
-              the arrow points down and the delta is red.
+            - If the delta is a negative number or a non-zero string starting
+              with a minus sign, the arrow points down and the delta is red.
             - Otherwise, the arrow points up and the delta is green.
 
-            Streamlit treats numeric zeros and the string ``"0"`` as zero. It
-            does not parse other string deltas as numbers to choose the arrow
-            and color, so they follow the sign rule above: ``"0%"`` is positive
-            and ``"-0.0%"`` is negative. To show a gray zero delta with
-            qualifier text, pass the number ``0`` as ``delta``. Put the
-            qualifier text in ``delta_description``.
+            Numeric zeros, including ``-0.0``, are zero. A string is zero when
+            it begins with a number equal to zero. That number may include a
+            leading ``+`` or ``-``, an optional currency symbol
+            (``$€£¥₹₩¢``) on either side of the sign, and an optional
+            exponent. Whitespace may surround those prefixes, and qualifier
+            text may follow the number. ``"0"``, ``"0.0"``, ``"+0"``,
+            ``"0%"``, ``"-0.0%"``, ``"$0"``, and ``"+0.0 pts"`` are zero.
+            Strings without one leading number, such as ``"0,5"``,
+            ``"USD 0"``, or ``"~0"``, follow the sign rule above.
 
             You can modify the display, color, and orientation of the arrow
             using the ``delta_color`` and ``delta_arrow`` parameters.
@@ -648,10 +653,45 @@ def _is_negative_delta(delta: Delta) -> bool:
     return dedent(str(delta)).startswith("-")
 
 
+# A string delta is zero when it has one leading number equal to zero.
+# Optional whitespace, one currency symbol from `$€£¥₹₩¢`, and a sign may
+# prefix that number (the sign may sit on either side of the currency symbol).
+# The number is a decimal with an optional exponent. The negative lookahead
+# keeps partial tokens such as "0,5" and "0.0.1" from matching.
+_LEADING_DELTA_NUMBER_RE: Final = re.compile(
+    r"""
+    ^\s*
+    (?:
+        [+-]\s*[$€£¥₹₩¢]\s*
+        | [$€£¥₹₩¢]\s*[+-]\s*
+        | [+-]\s*
+        | [$€£¥₹₩¢]\s*
+    )?
+    (?P<number>(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)
+    (?![0-9A-Za-z_.,])
+    """,
+    re.VERBOSE,
+)
+
+
+def _leading_string_delta_is_zero(delta: str) -> bool:
+    """Return True when ``delta`` begins with a single number equal to zero."""
+    match = _LEADING_DELTA_NUMBER_RE.match(delta)
+    if match is None:
+        return False
+
+    try:
+        value = Decimal(match.group("number"))
+    except InvalidOperation:
+        return False
+    return value == 0
+
+
 def _is_zero_delta(delta: Delta) -> bool:
-    # Only the literal string "0" is a zero delta; other numeric-looking strings
-    # (e.g. "0.0", "0%") stay positive. String deltas are dedented first to match
-    # the rendered value (see _parse_delta), so " 0" is treated the same as "0".
+    # Numeric zeros, including -0.0, compare equal to 0. Strings are dedented
+    # first so the check matches the rendered value (see _parse_delta). A string
+    # is zero when its leading number equals zero; any other string falls
+    # through to the leading-minus rule in _is_negative_delta.
     if isinstance(delta, str):
-        return dedent(delta) == "0"
+        return _leading_string_delta_is_zero(dedent(delta))
     return bool(delta == 0)

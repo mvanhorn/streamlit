@@ -264,28 +264,94 @@ class MetricTest(DeltaGeneratorTestCase):
         assert c.color == MetricProto.MetricColor.GRAY
         assert c.direction == expected_direction
 
-    @parameterized.expand(["0.0", "+0", "0%"])
-    def test_zero_like_strings_keep_positive_direction(self, delta):
-        """Test that only the literal string '0' is treated as zero."""
+    @parameterized.expand(
+        [
+            ("0.0", "0.0"),
+            ("+0", "+0"),
+            ("0%", "0%"),
+            ("0.0%", "0.0%"),
+            ("+0.0 pts", "+0.0 pts"),
+            ("-0.00", "-0.00"),
+            ("-0.0%", "-0.0%"),
+            ("-0", "-0"),
+            ("$0", "$0"),
+            ("$0.00", "$0.00"),
+            ("-$0", "-$0"),
+            ("$-0", "$-0"),
+            # Leading whitespace is dedented before rendering, matching "0".
+            ("  +0.0 pts", "+0.0 pts"),
+        ]
+    )
+    def test_zero_string_deltas_are_neutral(self, delta, expected_delta):
+        """A string whose leading number is zero is gray with no arrow."""
+        st.metric("label_test", "123", delta, delta_color="normal")
+
+        c = self.get_delta_from_queue().new_element.metric
+        assert c.delta == expected_delta
+        assert c.color == MetricProto.MetricColor.GRAY
+        assert c.direction == MetricProto.MetricDirection.NONE
+
+    def test_zero_string_inverse_color_is_neutral(self):
+        """A zero string stays gray with no arrow when delta_color is inverse.
+
+        ``"+0.0 pts"`` is numerically zero, so inverse coloring does not turn
+        it red or point the arrow up.
+        """
+        st.metric("label_test", "123", "+0.0 pts", delta_color="inverse")
+
+        c = self.get_delta_from_queue().new_element.metric
+        assert c.color == MetricProto.MetricColor.GRAY
+        assert c.direction == MetricProto.MetricDirection.NONE
+
+    @parameterized.expand(
+        [
+            "+0.1 pts",
+            "0.04",
+            "1%",
+            "$5",
+            "n/a",
+            "~0",
+            # Commas and a second dot are not one leading number.
+            "0,5",
+            "0,001",
+            "0.0.1",
+        ]
+    )
+    def test_non_zero_strings_keep_positive_direction(self, delta):
+        """Non-zero and unparsed strings without a leading minus point up.
+
+        Unparsed strings do not raise.
+        """
         st.metric("label_test", "123", delta)
 
         c = self.get_delta_from_queue().new_element.metric
         assert c.color == MetricProto.MetricColor.GREEN
         assert c.direction == MetricProto.MetricDirection.UP
 
-    def test_negative_zero_string_is_negative(self):
-        """The string '-0' is negative, unlike the numeric -0.0 neutral case.
-
-        Strings are matched as opaque display text (a leading '-' looks
-        negative), while numbers are compared numerically (-0.0 == 0), so the
-        two intentionally diverge.
-        """
-        st.metric("label_test", "123", "-0")
+    @parameterized.expand(["-1.2 pts", "-n/a"])
+    def test_negative_non_zero_strings_keep_down_direction(self, delta):
+        """Non-zero strings that start with a minus point down."""
+        st.metric("label_test", "123", delta)
 
         c = self.get_delta_from_queue().new_element.metric
-        assert c.delta == "-0"
         assert c.color == MetricProto.MetricColor.RED
         assert c.direction == MetricProto.MetricDirection.DOWN
+
+    def test_zero_string_respects_named_color(self):
+        """A named delta color wins for a zero string, with no arrow."""
+        st.metric("label_test", "123", "0%", delta_color="green")
+
+        c = self.get_delta_from_queue().new_element.metric
+        assert c.color == MetricProto.MetricColor.GREEN
+        assert c.direction == MetricProto.MetricDirection.NONE
+
+    def test_zero_string_delta_arrow_override(self):
+        """delta_arrow forces a direction even when the string delta is zero."""
+        st.metric("label_test", "123", "+0.0 pts", delta_arrow="up")
+
+        c = self.get_delta_from_queue().new_element.metric
+        assert c.color == MetricProto.MetricColor.GRAY
+        assert c.direction == MetricProto.MetricDirection.UP
 
     def test_delta_arrow_default(self):
         """Test that metric delta arrow defaults to auto."""
